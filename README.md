@@ -73,7 +73,4 @@ flowchart TD
     G --> L
     J --> L
 
-    L --> M[Monitoring / SLA Alerts]
 
-
-    
