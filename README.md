@@ -46,31 +46,69 @@ The Curated layer is intended for business-facing tables, marts, and reporting d
 
 ---
 
-## Data Flow Diagram
 
-```mermaid
-flowchart TD
-    A[Telemetry Files in S3 / Blob Storage] --> B[Airflow Ingestion DAG]
-    A2[Oracle Master Data] --> B2[Airflow Oracle Extract DAG]
+## Design Decisions
 
-    B --> C[Staging Schema / Bronze Tables]
-    B2 --> C
+### Incremental Load Strategy
+The pipeline processes data by **logical date** instead of reloading the full dataset.
 
-    C --> D[Schema Validation]
-    D --> E[Data Quality Checks]
-    E --> F[Reject / Quarantine Table]
-    E --> G[Core Load / Silver Tables]
+For large tables receiving high monthly volume, this approach:
+- improves performance
+- reduces runtime
+- lowers operational risk
+- makes backfills safer
+- aligns with logical partitioning patterns in a warehouse environment
 
-    G --> H[Deduplication + UPSERT by Business Key]
-    H --> I[Partitioned Core Tables]
+### Idempotency
+The Core layer uses **Postgres UPSERT** with `ON CONFLICT DO UPDATE`.
 
-    I --> J[Curated Transformations / Gold]
-    J --> K[Power BI Serving Tables / Views]
+This allows the DAG to be rerun multiple times for the same Airflow logical date without duplicating records.
 
-    B --> L[Structured Logs]
-    B2 --> L
-    E --> L
-    G --> L
-    J --> L
+### Data Quality
+Before loading into Core, the pipeline validates:
+- nulls in critical columns such as `device_id`, `event_timestamp`, and `event_date`
+- orphan records by checking telemetry data against the device master
 
+Invalid rows are redirected to a reject table.
 
+The pipeline fails explicitly if more than **5%** of the rows in a load contain nulls in critical fields.
+
+### Schema Evolution
+If new columns appear in the source CSV, the Staging layer can add them dynamically as nullable `TEXT` columns.
+
+This prevents ingestion from breaking due to source-side schema changes, while preserving governance in the Core layer.
+
+### Observability
+The pipeline logs:
+- task execution activity
+- rows processed
+- rows rejected
+- Core load completion metrics
+
+This provides operational visibility and supports troubleshooting.
+
+---
+
+## Repository Structure
+
+```text
+castor-senior-data-engineer-assessment/
+├── dags/
+│   └── telemetry_ingestion_dag.py
+├── plugins/
+│   ├── __init__.py
+│   ├── hooks/
+│   │   ├── __init__.py
+│   │   └── csv_hook.py
+│   └── operators/
+│       ├── __init__.py
+│       ├── data_quality_operator.py
+│       ├── extract_csv_to_stage_operator.py
+│       └── upsert_core_operator.py
+├── sample_data/
+│   └── telemetry_2026-04-15.csv
+├── sql/
+│   └── create_tables.sql
+├── DESIGN_NOTES.md
+├── README.md
+└── requirements.txt
